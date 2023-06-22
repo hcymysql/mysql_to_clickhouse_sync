@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # MySQL全量数据导入到ClickHouse里，默认并行10张表同时导出数据，每次轮询取1000条数据。
 # 使用条件：表必须有自增主键，测试环境MySQL 8.0
-# python3 script.py --mysql_host 192.168.198.239 --mysql_port 3336 --mysql_user admin --mysql_password hechunyang --mysql_db hcy --clickhouse_host 192.168.176.204 --clickhouse_port 9000 --clickhouse_user hechunyang --clickhouse_password 123456 --clickhouse_database hcy --batch_size 1000 --max_workers 10
+# python3 mysql_to_clickhouse_sync.py --mysql_host 192.168.198.239 --mysql_port 3336 --mysql_user admin --mysql_password hechunyang --mysql_db hcy --clickhouse_host 192.168.176.204 --clickhouse_port 9000 --clickhouse_user hechunyang --clickhouse_password 123456 --clickhouse_database hcy --batch_size 1000 --max_workers 10
 
 import argparse
 import pymysql.cursors
@@ -73,7 +73,7 @@ def worker(table_name, table_bounds, mysql_config, clickhouse_config, batch_size
     min_id, max_id = table_bounds[table_name]
     if min_id == max_id:  # 如果表只有一条记录，则直接处理
         records = read_from_mysql(table_name, min_id, max_id + 1, mysql_config)
-        logger.info(f"Retrieved {len(records)} record from MySQL table {table_name} with ID {min_id}")
+        print(f"Retrieved {len(records)} record from MySQL table {table_name} with ID {min_id}")
         if len(records) > 0:
             insert_into_clickhouse(table_name, records, clickhouse_config)
         return
@@ -90,8 +90,7 @@ def worker(table_name, table_bounds, mysql_config, clickhouse_config, batch_size
             if end_id > max_id:
                 end_id = max_id + 1
             records = read_from_mysql(table_name, start_id, end_id, mysql_config)
-            logger.info(
-                f"Retrieved {len(records)} records from MySQL table {table_name} between ID {start_id} and {end_id}")
+            print(f"Retrieved {len(records)} records from MySQL table {table_name} between ID {start_id} and {end_id}")
             if len(records) > 0:
                 executor.submit(insert_into_clickhouse, table_name, records, clickhouse_config)
 
@@ -131,8 +130,7 @@ def main(args):
 
             cursor.execute("SHOW MASTER STATUS")  # 获取当前的binlog文件名和位置点信息
             binlog_row = cursor.fetchone()
-            binlog_file, binlog_position, gtid = binlog_row['File'], binlog_row['Position'], binlog_row[
-                'Executed_Gtid_Set']
+            binlog_file, binlog_position, gtid = binlog_row['File'], binlog_row['Position'], binlog_row['Executed_Gtid_Set']
 
             # 将binlog文件名、位置点和GTID信息保存到metadata.txt文件中
             with open('metadata.txt', 'w') as f:
