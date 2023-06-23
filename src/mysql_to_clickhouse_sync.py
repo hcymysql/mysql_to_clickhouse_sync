@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 # MySQL全量数据导入到ClickHouse里，默认并行10张表同时导出数据，每次轮询取1000条数据。
 # 使用条件：表必须有自增主键，测试环境MySQL 8.0
-"""
->python3 mysql_to_clickhouse_sync.py --mysql_host 192.168.198.239 --mysql_port 3336 --mysql_user admin 
---mysql_password hechunyang --mysql_db hcy --clickhouse_host 192.168.176.204 --clickhouse_port 9000 
---clickhouse_user hechunyang --clickhouse_password 123456 --clickhouse_database hcy 
---batch_size 1000 --max_workers 10
-"""
+# python3 script.py --mysql_host 192.168.198.239 --mysql_port 3336 --mysql_user admin --mysql_password hechunyang --mysql_db hcy --clickhouse_host 192.168.176.204 --clickhouse_port 9000 --clickhouse_user hechunyang --clickhouse_password 123456 --clickhouse_database hcy --batch_size 1000 --max_workers 10
 
 import argparse
 import pymysql.cursors
@@ -41,8 +36,10 @@ def read_from_mysql(table_name, start_id, end_id, mysql_config):
             cursor.execute(query)
             results = cursor.fetchall()
             return results
-    finally:
-        mysql_connection.close()
+    #finally:
+        #mysql_connection.close()
+    except Exception as e:
+        logger.error(e)
 
 def insert_into_clickhouse(table_name, records, clickhouse_config):
     clickhouse_client = Client(**clickhouse_config)
@@ -78,6 +75,7 @@ def worker(table_name, table_bounds, mysql_config, clickhouse_config, batch_size
     min_id, max_id = table_bounds[table_name]
     if min_id == max_id:  # 如果表只有一条记录，则直接处理
         records = read_from_mysql(table_name, min_id, max_id + 1, mysql_config)
+        #logger.info(f"Retrieved {len(records)} record from MySQL table {table_name} with ID {min_id}")
         print(f"Retrieved {len(records)} record from MySQL table {table_name} with ID {min_id}")
         if len(records) > 0:
             insert_into_clickhouse(table_name, records, clickhouse_config)
@@ -95,6 +93,8 @@ def worker(table_name, table_bounds, mysql_config, clickhouse_config, batch_size
             if end_id > max_id:
                 end_id = max_id + 1
             records = read_from_mysql(table_name, start_id, end_id, mysql_config)
+            #logger.info(
+            #    f"Retrieved {len(records)} records from MySQL table {table_name} between ID {start_id} and {end_id}")
             print(f"Retrieved {len(records)} records from MySQL table {table_name} between ID {start_id} and {end_id}")
             if len(records) > 0:
                 executor.submit(insert_into_clickhouse, table_name, records, clickhouse_config)
@@ -121,7 +121,7 @@ def main(args):
     mysql_connection.begin()
     try:
         with mysql_connection.cursor() as cursor:
-            cursor.execute("SET transaction_isolation = 'REPEATABLE-READ'")
+            #cursor.execute("SET transaction_isolation = 'REPEATABLE-READ'")
             cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT")  # 设置一致性快照
             cursor.execute("SHOW TABLES")
             result = cursor.fetchall()
@@ -132,14 +132,16 @@ def main(args):
                 row = cursor.fetchone()
                 min_id, max_id = row['MIN(id)'], row['MAX(id)']
                 table_bounds[table_name] = (min_id, max_id)
-
+            """
             cursor.execute("SHOW MASTER STATUS")  # 获取当前的binlog文件名和位置点信息
             binlog_row = cursor.fetchone()
-            binlog_file, binlog_position, gtid = binlog_row['File'], binlog_row['Position'], binlog_row['Executed_Gtid_Set']
+            binlog_file, binlog_position, gtid = binlog_row['File'], binlog_row['Position'], binlog_row[
+                'Executed_Gtid_Set']
 
             # 将binlog文件名、位置点和GTID信息保存到metadata.txt文件中
             with open('metadata.txt', 'w') as f:
                 f.write('{}\n{}\n{}'.format(binlog_file, binlog_position, gtid))
+            """
     except Exception as e:
         logger.error(e)
 
@@ -147,8 +149,26 @@ def main(args):
 
     # 并发十张表同时导入数据
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        task_list = []
         for table_name in tables:
-            executor.submit(worker, table_name, table_bounds, mysql_config, clickhouse_config, args.batch_size, args.max_workers)
+            task = executor.submit(worker, table_name, table_bounds, mysql_config, clickhouse_config, args.batch_size, args.max_workers)
+            task_list.append(task)
+        
+
+        # 循环处理任何一个已完成的任务，并执行后续操作，直到所有任务都完成
+        while task_list:
+            done, _ = concurrent.futures.wait(task_list, return_when=concurrent.futures.FIRST_COMPLETED)
+            for future in done:
+                try:
+                    future.result()  # 获取已完成任务的结果（如果有异常会抛出异常）
+                except Exception as e:
+                    logger.error(e)
+            
+            # 从任务列表中移除已完成的任务
+            task_list = [task for task in task_list if not task.done()]
+
+        # 所有任务都完成后执行其他操作
+        logger.info("All tasks completed.")
 
 def parse_args():
     parser = argparse.ArgumentParser(description='MySQL to ClickHouse data synchronization')
