@@ -9,6 +9,7 @@ from clickhouse_driver import Client
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 import datetime
+import decimal
 import logging
 import sys
 
@@ -42,6 +43,7 @@ def read_from_mysql(table_name, start_id, end_id, mysql_config):
 
 def insert_into_clickhouse(table_name, records, clickhouse_config):
     clickhouse_client = Client(**clickhouse_config)
+    query = ''  # 初始化查询语句
     try:
         column_names = list(records[0].keys())
         values_list = []
@@ -58,14 +60,17 @@ def insert_into_clickhouse(table_name, records, clickhouse_config):
                     values.append("NULL")
                 elif isinstance(value, (int, float)):
                     values.append(str(value))
+                elif isinstance(value, decimal.Decimal):
+                    values.append(str(value))
                 else:
                     values.append(f"'{str(value)}'")
             values_list.append(f"({','.join(values)})")
         query = f"INSERT INTO {table_name} ({','.join(column_names)}) VALUES {','.join(values_list)}"
         clickhouse_client.execute(query)
         ###调试使用
-        # logger.info(f"执行的SQL是：{query}")
+        #logger.info(f"执行的SQL是：{query}")
     except Exception as e:
+        logger.error('Error SQL query:', query)  # 记录错误的SQL语句
         logger.error('Error inserting records into ClickHouse:', e)
     finally:
         clickhouse_client.disconnect()
@@ -118,6 +123,8 @@ def main(args):
         'database': args.clickhouse_database
     }
 
+    completed_tasks = 0  # 已完成的任务数
+
     mysql_connection = pymysql.connect(**mysql_config, autocommit=False, cursorclass=pymysql.cursors.DictCursor)
     mysql_connection.begin()
     try:
@@ -147,8 +154,6 @@ def main(args):
 
     tables = table_bounds.keys()
     table_iter = table_iterator(tables)
-    
-    completed_tasks = 0  # 已完成的任务数
 
     # 并发十张表同时导入数据
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
@@ -159,7 +164,6 @@ def main(args):
             task_list.append(task)
 
         # 循环处理任何一个已完成的任务，并执行后续操作，直到所有任务都完成
-        #while task_list:
         while completed_tasks < len(tables):  # 直到所有任务都完成
             done, _ = concurrent.futures.wait(task_list, return_when=concurrent.futures.FIRST_COMPLETED)
             for future in done:
