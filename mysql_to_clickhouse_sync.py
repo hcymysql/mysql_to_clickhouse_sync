@@ -3,9 +3,9 @@
 # 使用条件：表必须有自增主键，测试环境MySQL 8.0
 """
 shell> python3 mysql_to_clickhouse_sync.py  --mysql_host 192.168.198.239 --mysql_port 3336 --mysql_user admin 
---mysql_password hechunyang --mysql_db hcy --clickhouse_host 192.168.176.204 --clickhouse_port 9000 
---clickhouse_user hechunyang --clickhouse_password 123456 --clickhouse_database hcy 
---batch_size 1000 --max_workers 10 --exclude_tables "^table1" --include_tables "table2$"
+--mysql_password hechunyang --mysql_db hcy --clickhouse_host 192.168.176.204 
+--clickhouse_port 9000 --clickhouse_user hechunyang --clickhouse_password 123456 
+--clickhouse_database hcy --batch_size 1000 --max_workers 10 --exclude_tables "^table1" --include_tables "table2$"
 """
 
 import argparse
@@ -158,10 +158,18 @@ def main(args):
                       and (not include_pattern or include_pattern.search(val))]
             table_bounds = {}
             for table_name in tables:
-                cursor.execute("SELECT IFNULL(MIN(_rowid), 0) AS `MIN(id)`, IFNULL(MAX(_rowid), 0) AS `MAX(id)` FROM `{}`".format(table_name))
-                row = cursor.fetchone()
-                min_id, max_id = row['MIN(id)'], row['MAX(id)']
-                table_bounds[table_name] = (min_id, max_id)
+                try:
+                    cursor.execute("SELECT IFNULL(MIN(_rowid), 0) AS `MIN(id)`, IFNULL(MAX(_rowid), 0) AS `MAX(id)` FROM `{}`".format(table_name))
+                    row = cursor.fetchone()
+                    min_id, max_id = row['MIN(id)'], row['MAX(id)']
+                    table_bounds[table_name] = (min_id, max_id)
+                except pymysql.Error as err:
+                    error_message = str(err)
+                    if "_rowid" in error_message or "Unknown column" in error_message:
+                        logger.error("表 {} 缺少主键自增 ID".format(table_name))
+                    else:
+                        # 其他错误处理逻辑
+                        logger.error("执行查询时出现错误: {}".format(error_message))
 
             cursor.execute("SHOW MASTER STATUS")  # 获取当前的binlog文件名和位置点信息
             binlog_row = cursor.fetchone()
@@ -231,5 +239,4 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
     main(args)
-
 
